@@ -1,0 +1,1596 @@
+-- Target Farm - Civ | LocalScript (Roblox)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+local UIS = UserInputService
+local Lighting = game:GetService("Lighting")
+
+-- ========== DEVICE & SIZING ==========
+local IS_MOBILE = (UIS.PreferredInput == Enum.PreferredInput.Touch)
+    or (UIS.TouchEnabled and not UIS.MouseEnabled)
+local WIN_W    = 340
+local WIN_H    = 415
+local BTN_H    = 38
+local PAD      = 10
+local FONT     = 13
+local WIN_POS  = UDim2.new(0.5, -WIN_W/2, 0.08, 0)
+
+-- ========== BLACK THEME ==========
+local THEME = {
+    BG = Color3.fromRGB(0,0,0), SURFACE = Color3.fromRGB(25,25,25),
+    BORDER = Color3.fromRGB(60,60,60), TEXT = Color3.fromRGB(255,255,255),
+    MUTED = Color3.fromRGB(140,140,140), SUCCESS = Color3.fromRGB(34,197,94),
+    DANGER = Color3.fromRGB(239,68,68), ON_BG = Color3.fromRGB(10,40,10),
+    OFF_BG = Color3.fromRGB(40,10,10),
+}
+
+-- ========== SETTINGS ==========
+local CLICK_X, CLICK_Y = 0.7, 0.5
+local AUTO_DEATH_CONFIRM = 0.5
+local VOID_DANGER_DISTANCE = 150
+local ABILITY_SEQUENCE_GAP = 7
+local ABILITY_KEY_DELAY    = 2
+local M1_SPAM_DELAY        = 0.05
+local Q_SPAM_DELAY         = 0.1
+local SWITCH_ENABLED = false
+local SWITCH_INTERVAL = 0.2
+local lastSwitchTime = 0
+local PREDICTION_ENABLED = false
+local PREDICTION_TIME    = 0.25
+local PREDICTION_MAX_LEAD = 60
+local MODE = "under"
+local UNDER_STUDS = 6.7
+local UNDER_MAX_STUDS = 20
+local UNDER_MIN_STUDS = 2
+local UP_STUDS = 8.3
+local UP_MAX_STUDS = 20
+local UP_MIN_STUDS = 2
+local CROSS_STUDS = 6.0
+local CROSS_HEIGHT = 2.0
+local CROSS_INTERVAL = 0.0
+local CROSS_PATTERN = {"front","back","left","right","front","back","left","right"}
+local ORBIT_SPEED = 1000
+local ORBIT_STUDS = 7
+local ORBIT_MIN_STUDS = 1
+local ORBIT_MAX_STUDS = 20
+local ORBIT_FLOOR_SINK = 0.5
+local ORBIT_FOLLOW_MIN = 1.0
+local ORBIT_FOLLOW_MAX = 1.2
+local BEHIND_DISTANCE = 6
+local TELEPORT_DISTANCE = 6
+local TELEPORT_INTERVAL = 0.05
+local TEST_PHASE = 1
+local NOCLIP_ENABLED = true
+local VOID_MARGIN = 1
+local FAR_TELEPORT_THRESHOLD = 150
+local MAX_PIVOT_STEP = 80
+local SAFE_MODE_ENABLED = true
+local SAFE_TRIGGER_HP = 20
+local SAFE_RESUME_HP = 50
+local SAFE_HEIGHT = 5000
+local SAFE_PLATFORM_SIZE = Vector3.new(60,2,60)
+local FAST_MODE_ENABLED = false
+local fastModeOriginalTransparency = {}
+local fastModeOriginalLighting = nil
+local fastModeOriginalAtmosphere = nil
+local fastModeOriginalSky = nil
+
+-- ========== HITBOX EXPANDER STATE ==========
+local HITBOX_ENABLED = false
+local HITBOX_SIZE = 15
+local hitboxParts = {}
+
+-- ========== CHANGELOG ==========
+local CHANGELOG_TTL = 86400
+local CHANGELOG_FILE = "TargetFarm_Changelog.txt"
+local CURRENT_VERSION = "1.1"
+local CURRENT_UPDATE = {
+    "v1.1 — Hitbox Expander",
+    "• Added invisible Hitbox Expander",
+    "• Body looks normal, hitbox is big",
+    "• Works on R6 and R15 rigs",
+    "v1.0 — Release",
+    "• Initial build",
+    "• Auto farm and abilities",
+    "• Hide hit and safe mode platforms",
+    "• Performance fast mode",
+    "• Added Behind Mode (fast follow)",
+}
+
+local function hasFileIO()
+    return (type(writefile) == "function") and (type(readfile) == "function") and (type(isfile) == "function")
+end
+local function loadActiveChangelog()
+    local entries, storedVersion = {}, nil
+    local io = hasFileIO()
+    if io then
+        pcall(function()
+            if isfile(CHANGELOG_FILE) then
+                local content = readfile(CHANGELOG_FILE) or ""
+                for line in content:gmatch("[^\r\n]+") do
+                    if line:sub(1, 8) == "VERSION|" then
+                        local v = line:match("^VERSION|([^|]+)|")
+                        if v then storedVersion = v end
+                    else
+                        local ts, text = line:match("^(%d+)|(.+)$")
+                        if ts and text then table.insert(entries, { ts = tonumber(ts), text = text }) end
+                    end
+                end
+            end
+        end)
+    end
+    local now = os.time()
+    local active = {}
+    if storedVersion and storedVersion ~= CURRENT_VERSION then entries = {} end
+    for _, e in ipairs(entries) do
+        if (now - e.ts) < CHANGELOG_TTL then table.insert(active, e) end
+    end
+    if storedVersion ~= CURRENT_VERSION then
+        local existing = {}
+        for _, e in ipairs(active) do existing[e.text] = true end
+        for i = #CURRENT_UPDATE, 1, -1 do
+            local text = CURRENT_UPDATE[i]
+            if not existing[text] then
+                table.insert(active, 1, { ts = now, text = text })
+                existing[text] = true
+            end
+        end
+    end
+    if io then
+        pcall(function()
+            local out = { "VERSION|" .. CURRENT_VERSION .. "|" .. now }
+            for _, e in ipairs(active) do table.insert(out, e.ts .. "|" .. e.text) end
+            writefile(CHANGELOG_FILE, table.concat(out, "\n"))
+        end)
+    end
+    table.sort(active, function(a, b) return a.ts > b.ts end)
+    local display = {}
+    for _, e in ipairs(active) do table.insert(display, e.text) end
+    return display
+end
+local ACTIVE_CHANGELOG = loadActiveChangelog()
+
+-- ========== STATE ==========
+local selectedPlayer = nil
+local autoTarget = true
+local stickyManualPlayer = nil
+local farming = false
+local voidedPlayers = {}
+local orbitAngle = 0
+local orbitCollide = {}
+local noclipParts = {}
+local lastPartScan = 0
+local lastTeleportTime = 0
+local crossIndex = 1
+local lastCrossTime = 0
+local tHum, tRoot
+local safePlatform = nil
+local safeCenter = Vector3.new(0,0,0)
+local HIDE_HIT_ENABLED = false
+local isHidingHit = false
+local tpVoidRunning = false
+local TPVOID_VOID_MARGIN = 10
+local TPVOID_BELOW_HOLD = 1.5
+
+local TAP_TARGETS = {
+    m1={x=0.85,y=0.80}, q={x=0.90,y=0.60}, one={x=0.10,y=0.70},
+    two={x=0.20,y=0.70}, three={x=0.30,y=0.70}, four={x=0.40,y=0.70},
+}
+
+local function mobileTap(fraction)
+    if not IS_MOBILE or not fraction then return end
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        local size = cam and cam.ViewportSize or Vector2.new(800,600)
+        local px = math.floor(size.X * fraction.x)
+        local py = math.floor(size.Y * fraction.y)
+        VIM:SendMouseButtonEvent(px, py, 0, true, game, 0)
+        task.wait(0.05)
+        VIM:SendMouseButtonEvent(px, py, 0, false, game, 0)
+    end)
+end
+
+local function getParent()
+    local ok, hui = pcall(function() return gethui and gethui() end)
+    if ok and hui then return hui end
+    local ok2, core = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and core then return core end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local old = getParent():FindFirstChild("TargetFarmGui")
+if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "TargetFarmGui"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = getParent()
+
+local function corner(obj, r)
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r or 10); c.Parent = obj
+end
+local function stroke(obj, color, thickness)
+    local s = Instance.new("UIStroke"); s.Color = color or THEME.BORDER
+    s.Thickness = thickness or 1.5; s.Parent = obj
+end
+local function makeButton(parent, text, size, pos)
+    local b = Instance.new("TextButton")
+    b.Size = size; b.Position = pos; b.BackgroundColor3 = THEME.SURFACE
+    b.TextColor3 = THEME.TEXT; b.Font = Enum.Font.GothamBold; b.TextSize = FONT
+    b.Text = text; b.AutoButtonColor = true; b.Parent = parent
+    corner(b, 8); stroke(b, THEME.BORDER); return b
+end
+local function setButtonState(btn, on)
+    btn.BackgroundColor3 = on and THEME.ON_BG or THEME.OFF_BG
+    local s = btn:FindFirstChildOfClass("UIStroke")
+    if s then s.Color = on and THEME.SUCCESS or THEME.DANGER end
+end
+
+-- ========== HITBOX EXPANDER HELPERS ==========
+local HITBOX_LIMB_NAMES = {
+    ["HumanoidRootPart"]=true, ["Head"]=true, ["Torso"]=true,
+    ["UpperTorso"]=true, ["LowerTorso"]=true,
+    ["LeftUpperArm"]=true, ["RightUpperArm"]=true,
+    ["LeftLowerArm"]=true, ["RightLowerArm"]=true,
+    ["LeftHand"]=true, ["RightHand"]=true,
+    ["LeftUpperLeg"]=true, ["RightUpperLeg"]=true,
+    ["LeftLowerLeg"]=true, ["RightLowerLeg"]=true,
+    ["LeftFoot"]=true, ["RightFoot"]=true,
+    ["Left Arm"]=true, ["Right Arm"]=true,
+    ["Left Leg"]=true, ["Right Leg"]=true,
+}
+local function makeHitboxPart(sourcePart, char)
+    local hb = Instance.new("Part")
+    hb.Name = "HitboxExpander"
+    hb.Size = Vector3.new(HITBOX_SIZE, HITBOX_SIZE, HITBOX_SIZE)
+    hb.Transparency = 1
+    hb.CanCollide = false
+    hb.CanTouch = true
+    hb.CanQuery = true
+    hb.Massless = true
+    hb.Anchored = false
+    hb.CFrame = sourcePart.CFrame
+    hb.Parent = char
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = sourcePart
+    weld.Part1 = hb
+    weld.Parent = hb
+    return hb
+end
+local function applyHitboxToCharacter(char)
+    if not HITBOX_ENABLED or not char then return end
+    if hitboxParts[char] then return end
+    local list = {}
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and HITBOX_LIMB_NAMES[part.Name] then
+            local ok, hb = pcall(makeHitboxPart, part, char)
+            if ok and hb then table.insert(list, hb) end
+        end
+    end
+    hitboxParts[char] = list
+end
+local function clearHitboxFromCharacter(char)
+    if not char then return end
+    local list = hitboxParts[char]
+    if list then
+        for _, p in ipairs(list) do if p and p.Parent then p:Destroy() end end
+        hitboxParts[char] = nil
+    end
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") and d.Name == "HitboxExpander" then
+            pcall(function() d:Destroy() end)
+        end
+    end
+end
+local function clearAllHitboxes()
+    for char in pairs(hitboxParts) do clearHitboxFromCharacter(char) end
+    hitboxParts = {}
+end
+local function refreshAllHitboxes()
+    if not HITBOX_ENABLED then return end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then applyHitboxToCharacter(plr.Character) end
+    end
+end
+
+-- ========== ONE-TIME RESET ==========
+local resetDone = false
+local function doOneTimeReset()
+    if resetDone then return end
+    resetDone = true
+    task.spawn(function()
+        task.wait(1.5)
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 then pcall(function() hum.Health = 0 end) end
+    end)
+end
+task.defer(doOneTimeReset)-- ========== CHANGELOG POPUP ==========
+local function showChangelog()
+    if #ACTIVE_CHANGELOG == 0 then return end
+    local popW, popH = 320, 260
+    local clFrame = Instance.new("Frame")
+    clFrame.Name = "ChangelogPopup"
+    clFrame.Size = UDim2.new(0, popW, 0, popH)
+    clFrame.Position = UDim2.new(0.5, -popW/2, 0.5, -popH/2)
+    clFrame.BackgroundColor3 = THEME.BG
+    clFrame.BorderSizePixel = 0
+    clFrame.Active = true; clFrame.ZIndex = 50; clFrame.Parent = gui
+    corner(clFrame, 12); stroke(clFrame, THEME.BORDER, 2)
+
+    local clTitle = Instance.new("TextLabel")
+    clTitle.Size = UDim2.new(1, -50, 0, 32); clTitle.Position = UDim2.new(0, 12, 0, 8)
+    clTitle.BackgroundTransparency = 1; clTitle.Text = "UPDATE CHANGELOG"
+    clTitle.TextColor3 = THEME.TEXT; clTitle.Font = Enum.Font.GothamBold
+    clTitle.TextSize = 14; clTitle.TextXAlignment = Enum.TextXAlignment.Left
+    clTitle.ZIndex = 51; clTitle.Parent = clFrame
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 28, 0, 28); closeBtn.Position = UDim2.new(1, -36, 0, 8)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(40,10,10); closeBtn.TextColor3 = Color3.fromRGB(255,220,220)
+    closeBtn.Font = Enum.Font.GothamBold; closeBtn.TextSize = 16; closeBtn.Text = "✕"
+    closeBtn.ZIndex = 52; closeBtn.Parent = clFrame
+    corner(closeBtn, 8); stroke(closeBtn, THEME.DANGER, 1)
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -24, 1, -52); scroll.Position = UDim2.new(0, 12, 0, 44)
+    scroll.BackgroundColor3 = Color3.fromRGB(10,10,10); scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 4; scroll.CanvasSize = UDim2.new(0,0,0,0)
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.ZIndex = 51; scroll.Parent = clFrame
+    corner(scroll, 8); stroke(scroll, THEME.BORDER)
+
+    local clList = Instance.new("UIListLayout"); clList.Padding = UDim.new(0, 4); clList.Parent = scroll
+    local clPad = Instance.new("UIPadding")
+    clPad.PaddingTop = UDim.new(0, 6); clPad.PaddingBottom = UDim.new(0, 6)
+    clPad.PaddingLeft = UDim.new(0, 8); clPad.PaddingRight = UDim.new(0, 8)
+    clPad.Parent = scroll
+
+    for i, line in ipairs(ACTIVE_CHANGELOG) do
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, 0, 0, 0); lbl.AutomaticSize = Enum.AutomaticSize.Y
+        lbl.BackgroundTransparency = 1; lbl.Text = line
+        lbl.TextColor3 = (i == 1) and Color3.fromRGB(255,255,255) or Color3.fromRGB(200,200,200)
+        lbl.Font = (i == 1) and Enum.Font.GothamBold or Enum.Font.Gotham
+        lbl.TextSize = (i == 1) and 13 or 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.TextWrapped = true
+        lbl.ZIndex = 52; lbl.Parent = scroll
+    end
+
+    closeBtn.MouseButton1Click:Connect(function()
+        if clFrame and clFrame.Parent then clFrame:Destroy() end
+    end)
+end
+task.defer(showChangelog)
+
+-- ========== MAIN PANEL ==========
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.new(0, WIN_W, 0, WIN_H)
+main.Position = WIN_POS
+main.BackgroundColor3 = THEME.BG
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = gui
+corner(main, 12)
+stroke(main, Color3.fromRGB(70,70,70), 1.5)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -90, 0, 32)
+title.Position = UDim2.new(0, 10, 0, 3)
+title.BackgroundTransparency = 1
+title.Text = "Target Farm - Civ"
+title.TextColor3 = THEME.TEXT
+title.Font = Enum.Font.GothamBold
+title.TextSize = 15
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = main
+
+local settingsBtn = makeButton(main, "⚙", UDim2.new(0,26,0,26), UDim2.new(1,-60,0,6))
+settingsBtn.TextSize = 15; settingsBtn.ZIndex = 30
+local minBtn = makeButton(main, "-", UDim2.new(0,26,0,26), UDim2.new(1,-30,0,6))
+minBtn.TextSize = 14; minBtn.ZIndex = 30
+
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, -PAD*2, 1, -46)
+body.Position = UDim2.new(0, PAD, 0, 42)
+body.BackgroundTransparency = 1
+body.Parent = main
+
+-- ========== MAIN BODY CONTENT ==========
+local selectBtn = makeButton(body, "Auto: lowest HP v", UDim2.new(1, 0, 0, BTN_H-4), UDim2.new(0, 0, 0, 0))
+selectBtn.TextSize = FONT - 1
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, 0, 0, 16); status.Position = UDim2.new(0, 2, 0, BTN_H + 2)
+status.BackgroundTransparency = 1; status.Text = "Target: none"
+status.TextColor3 = THEME.MUTED; status.Font = Enum.Font.Gotham
+status.TextSize = 11; status.TextXAlignment = Enum.TextXAlignment.Left; status.Parent = body
+
+local farmBtn = makeButton(body, "Auto Farm: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0, 0, 0, BTN_H + 22))
+setButtonState(farmBtn, false)
+local abilityBtn = makeButton(body, "Auto Ability: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0.5, 3, 0, BTN_H + 22))
+setButtonState(abilityBtn, false)
+
+local pcTag = Instance.new("TextLabel")
+pcTag.Size = UDim2.new(1, -8, 0, 10); pcTag.Position = UDim2.new(0, 4, 1, -12)
+pcTag.BackgroundTransparency = 1; pcTag.Text = "PC recommend · Z to toggle"
+pcTag.TextColor3 = THEME.MUTED; pcTag.Font = Enum.Font.Gotham
+pcTag.TextSize = 9; pcTag.Parent = abilityBtn
+
+local safeBtn = makeButton(body, "Safe Mode: ON", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0, 0, 0, BTN_H*2 + 26))
+setButtonState(safeBtn, true)
+local switchBtn = makeButton(body, "Switch: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0.5, 3, 0, BTN_H*2 + 26))
+setButtonState(switchBtn, false)
+
+local safeStatus = Instance.new("TextLabel")
+safeStatus.Size = UDim2.new(0.5, -3, 0, 14); safeStatus.Position = UDim2.new(0, 2, 0, BTN_H*3 + 28)
+safeStatus.BackgroundTransparency = 1; safeStatus.Text = "Safe: idle"
+safeStatus.TextColor3 = THEME.MUTED; safeStatus.Font = Enum.Font.Gotham
+safeStatus.TextSize = 10; safeStatus.TextXAlignment = Enum.TextXAlignment.Left; safeStatus.Parent = body
+
+local switchStatus = Instance.new("TextLabel")
+switchStatus.Size = UDim2.new(0.5, -3, 0, 14); switchStatus.Position = UDim2.new(0.5, 3, 0, BTN_H*3 + 28)
+switchStatus.BackgroundTransparency = 1; switchStatus.Text = "Switch: off"
+switchStatus.TextColor3 = THEME.MUTED; switchStatus.Font = Enum.Font.Gotham
+switchStatus.TextSize = 10; switchStatus.TextXAlignment = Enum.TextXAlignment.Left; switchStatus.Parent = body
+
+local fastModeBtn = makeButton(body, "Fast: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0, 0, 0, BTN_H*3 + 46))
+setButtonState(fastModeBtn, false)
+local predictionBtn = makeButton(body, "Predict: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0.5, 3, 0, BTN_H*3 + 46))
+setButtonState(predictionBtn, false)
+
+local hideHitBtn = makeButton(body, "Hide Hit: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0, 0, 0, BTN_H*4 + 50))
+setButtonState(hideHitBtn, false)
+local hitboxBtn = makeButton(body, "Hitbox: OFF", UDim2.new(0.5, -3, 0, BTN_H), UDim2.new(0.5, 3, 0, BTN_H*4 + 50))
+setButtonState(hitboxBtn, false)
+
+local tpVoidBtn = makeButton(body, "Anti Deathcounter", UDim2.new(1, 0, 0, BTN_H), UDim2.new(0, 0, 0, BTN_H*5 + 54))
+
+-- ========== DRAGGING MAIN ==========
+do
+    local dragging, dragStart, startPos
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true; dragStart = input.Position; startPos = main.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch
+        or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local d = input.Position - dragStart
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                      startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+-- ========== DROPDOWN LIST ==========
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1, 0, 0, 230); list.Position = UDim2.new(0, 0, 0, BTN_H + 4)
+list.BackgroundColor3 = Color3.fromRGB(10,10,10); list.BorderSizePixel = 0
+list.ScrollBarThickness = 4; list.CanvasSize = UDim2.new(0,0,0,0)
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y; list.Visible = false
+list.ZIndex = 5; list.Parent = body
+corner(list, 8); stroke(list, THEME.BORDER)
+
+local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0, 4); layout.Parent = list
+local pad = Instance.new("UIPadding")
+pad.PaddingTop = UDim.new(0, 4); pad.PaddingBottom = UDim.new(0, 4)
+pad.PaddingLeft = UDim.new(0, 4); pad.PaddingRight = UDim.new(0, 4); pad.Parent = list
+
+local hiddenWhileListOpen = { farmBtn, abilityBtn, safeBtn, safeStatus, switchBtn, switchStatus, status, fastModeBtn, predictionBtn, hideHitBtn, hitboxBtn, tpVoidBtn }
+local function setListOpen(open)
+    list.Visible = open
+    for _, el in ipairs(hiddenWhileListOpen) do el.Visible = not open end
+end
+
+local findNextAlive, findNearestAlive, isTargetVoiding, refreshTarget
+
+local function isPlayerVoided(plr)
+    local t = voidedPlayers[plr]; if not t then return false end
+    if (os.clock() - t) >= 3 then voidedPlayers[plr] = nil; return false end
+    return true
+end
+local function isAlive(plr)
+    local char = plr and plr.Character; if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    return hum ~= nil and root ~= nil and hum.Health > 0
+        and hum:GetState() ~= Enum.HumanoidStateType.Dead
+end
+local function manualActive()
+    return stickyManualPlayer ~= nil and isAlive(stickyManualPlayer) and not isPlayerVoided(stickyManualPlayer)
+end
+
+local function setTarget(plr, closeList)
+    if manualActive() and plr ~= stickyManualPlayer then return end
+    selectedPlayer = plr
+    if plr then
+        selectBtn.Text = autoTarget and "Auto: lowest HP v" or (plr.DisplayName .. " v")
+        status.Text = "Target: " .. plr.Name
+        status.TextColor3 = Color3.fromRGB(170,170,170)
+    else
+        selectBtn.Text = autoTarget and "Auto: lowest HP v" or "Select Player v"
+        status.Text = "Target: none"; status.TextColor3 = THEME.MUTED
+    end
+    if closeList then setListOpen(false) end
+end
+
+local function setManualTarget(plr)
+    if SWITCH_ENABLED then
+        SWITCH_ENABLED = false; switchBtn.Text = "Switch: OFF"
+        setButtonState(switchBtn, false); switchStatus.Text = "Switch: off"
+        switchStatus.TextColor3 = THEME.MUTED
+    end
+    autoTarget = false; stickyManualPlayer = plr; setTarget(plr, true)
+    status.Text = "Locked: " .. plr.Name .. " (auto re-locks on respawn)"
+    status.TextColor3 = THEME.SUCCESS
+end
+
+local function refreshList()
+    for _, c in ipairs(list:GetChildren()) do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+    local autoEntry = Instance.new("TextButton")
+    autoEntry.Size = UDim2.new(1, 0, 0, 30); autoEntry.BackgroundColor3 = THEME.ON_BG
+    autoEntry.TextColor3 = THEME.TEXT; autoEntry.Font = Enum.Font.GothamBold
+    autoEntry.TextSize = 12; autoEntry.Text = "Auto (lowest HP)"
+    autoEntry.ZIndex = 6; autoEntry.Parent = list
+    corner(autoEntry, 6); stroke(autoEntry, THEME.SUCCESS, 1)
+    autoEntry.MouseButton1Click:Connect(function()
+        autoTarget = true; stickyManualPlayer = nil
+        setTarget(selectedPlayer, true); status.Text = "Auto target: lowest HP"
+    end)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(1, 0, 0, 30); b.BackgroundColor3 = THEME.SURFACE
+            b.TextColor3 = THEME.TEXT; b.Font = Enum.Font.Gotham
+            b.TextSize = 12; b.Text = plr.DisplayName .. " (@" .. plr.Name .. ")"
+            b.ZIndex = 6; b.Parent = list
+            corner(b, 6); stroke(b, THEME.BORDER, 1)
+            b.MouseButton1Click:Connect(function() setManualTarget(plr) end)
+        end
+    end
+end
+
+selectBtn.MouseButton1Click:Connect(function()
+    if not list.Visible then refreshList() end
+    setListOpen(not list.Visible)
+end)Players.PlayerRemoving:Connect(function(plr)
+    voidedPlayers[plr] = nil
+    if plr.Character then clearHitboxFromCharacter(plr.Character) end
+    if stickyManualPlayer and plr == stickyManualPlayer then
+        stickyManualPlayer = nil; autoTarget = true
+        local nextPlr = findNextAlive()
+        if nextPlr then setTarget(nextPlr); status.Text = "Manual target left - auto lowest HP"
+        else setTarget(nil); status.Text = "Manual target left - no others alive" end
+    elseif plr == selectedPlayer then
+        if farming then
+            local nextPlr = findNextAlive(plr)
+            if nextPlr then setTarget(nextPlr)
+            else setTarget(nil); status.Text = "No alive targets" end
+        else setTarget(nil) end
+    end
+    if list.Visible then task.defer(refreshList) end
+end)
+
+Players.PlayerAdded:Connect(function(plr)
+    if list.Visible then task.defer(refreshList) end
+    if plr == LocalPlayer then return end
+    plr.CharacterAdded:Connect(function(char)
+        task.wait(0.5)
+        if HITBOX_ENABLED then applyHitboxToCharacter(char) end
+    end)
+    if plr.Character and HITBOX_ENABLED then applyHitboxToCharacter(plr.Character) end
+end)
+
+for _, plr in ipairs(Players:GetPlayers()) do
+    if plr ~= LocalPlayer then
+        plr.CharacterAdded:Connect(function(char)
+            task.wait(0.5)
+            if HITBOX_ENABLED then applyHitboxToCharacter(char) end
+        end)
+    end
+end
+
+-- ========== MINIMIZE ==========
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+    minimized = not minimized
+    body.Visible = not minimized
+    setListOpen(false)
+    main.Size = minimized and UDim2.new(0, WIN_W, 0, 40) or UDim2.new(0, WIN_W, 0, WIN_H)
+    minBtn.Text = minimized and "+" or "-"
+end)
+
+-- ========== FARM LOGIC ==========
+local function getRoot(plr) local c = plr and plr.Character; return c and c:FindFirstChild("HumanoidRootPart") end
+findNextAlive = function(skip)
+    local mine = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local best, bestHp, bestDist
+    local voidY = workspace.FallenPartsDestroyHeight
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr ~= skip and isAlive(plr) and not isPlayerVoided(plr) then
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if (root.Position.Y - voidY) > VOID_DANGER_DISTANCE then
+                local hp = hum.Health
+                local dist = mine and (mine.Position - root.Position).Magnitude or 0
+                if not best or hp < bestHp or (hp == bestHp and dist < bestDist) then
+                    best, bestHp, bestDist = plr, hp, dist
+                end
+            end
+        end
+    end
+    return best
+end
+findNearestAlive = function(skip)
+    local mine = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local best, bestDist
+    local voidY = workspace.FallenPartsDestroyHeight
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr ~= skip and isAlive(plr) and not isPlayerVoided(plr) then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if (root.Position.Y - voidY) > VOID_DANGER_DISTANCE then
+                local dist = mine and (mine.Position - root.Position).Magnitude or 0
+                if not best or dist < bestDist then best, bestDist = plr, dist end
+            end
+        end
+    end
+    return best
+end
+local function findRandomAliveSkipCurrent()
+    local pool = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr ~= selectedPlayer and isAlive(plr) and not isPlayerVoided(plr) then
+            table.insert(pool, plr)
+        end
+    end
+    if #pool == 0 then return nil end
+    return pool[math.random(1, #pool)]
+end
+isTargetVoiding = function(_, targetRoot, targetHum)
+    if not targetRoot or not targetRoot.Parent then return false end
+    if not targetHum or targetHum.Health <= 0 then return false end
+    local y = targetRoot.Position.Y; local vy = targetRoot.AssemblyLinearVelocity.Y
+    local voidY = workspace.FallenPartsDestroyHeight
+    if y <= voidY + 30 then return true end
+    if vy < -200 and y <= voidY + 100 then return true end
+    return false
+end
+
+local function restoreCamera()
+    local cam = workspace.CurrentCamera
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if cam and hum then cam.CameraSubject = hum end
+    pcall(function() LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Zoom end)
+end
+local function freezeCharacter()
+    local char = LocalPlayer.Character; if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics); hum.PlatformStand = true end) end
+    if root then root.AssemblyLinearVelocity = Vector3.zero; root.AssemblyAngularVelocity = Vector3.zero end
+end
+local function unfreezeCharacter()
+    local char = LocalPlayer.Character; if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum.PlatformStand = false; hum:ChangeState(Enum.HumanoidStateType.GettingUp) end) end
+end
+local function pivotCharacterTo(cf)
+    local char = LocalPlayer.Character; if not char then return end
+    pcall(function() char:PivotTo(cf) end)
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if root then root.CFrame = cf; root.AssemblyLinearVelocity = Vector3.zero; root.AssemblyAngularVelocity = Vector3.zero end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics); hum.PlatformStand = true end) end
+end
+local function pivotFarm(cf)
+    local char = LocalPlayer.Character; if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then pivotCharacterTo(cf); return end
+    local delta = cf.Position - root.Position; local dist = delta.Magnitude
+    if dist > FAR_TELEPORT_THRESHOLD then
+        local dir = delta.Unit; local step = math.min(dist, MAX_PIVOT_STEP)
+        local clampedPos = root.Position + dir * step
+        pivotCharacterTo(cf - cf.Position + clampedPos)
+    else pivotCharacterTo(cf) end
+end
+local function applyFarmNoclip(char)
+    if not NOCLIP_ENABLED or not char then return end
+    local now = os.clock()
+    if #noclipParts == 0 or (now - lastPartScan) >= 0.3 then
+        lastPartScan = now; noclipParts = {}
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then table.insert(noclipParts, p) end
+        end
+    end
+    for _, p in ipairs(noclipParts) do
+        if p.Parent then
+            if orbitCollide[p] == nil then orbitCollide[p] = p.CanCollide end
+            if p.CanCollide then p.CanCollide = false end
+        end
+    end
+end
+local function restoreCollisions()
+    for part, was in pairs(orbitCollide) do
+        if part and part.Parent then pcall(function() part.CanCollide = was end) end
+    end
+    orbitCollide = {}; noclipParts = {}
+end
+local function getBodyExtents(char)
+    local minY, maxY = math.huge, -math.huge
+    for _, p in ipairs(char:GetChildren()) do
+        if p:IsA("BasePart") then
+            local v = p.CFrame:VectorToObjectSpace(Vector3.yAxis)
+            local half = (math.abs(v.X)*p.Size.X + math.abs(v.Y)*p.Size.Y + math.abs(v.Z)*p.Size.Z)/2
+            local y = p.Position.Y
+            if y - half < minY then minY = y - half end
+            if y + half > maxY then maxY = y + half end
+        end
+    end
+    if minY == math.huge then return nil end
+    return minY, maxY
+end
+local function findFloorY(x, z, fromY, fallbackY)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {}
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then table.insert(ignore, plr.Character) end
+    end
+    params.FilterDescendantsInstances = ignore; params.IgnoreWater = true; params.RespectCanCollide = true
+    local hit = workspace:Raycast(Vector3.new(x, fromY, z), Vector3.new(0, -1000, 0), params)
+    if hit then return hit.Position.Y end
+    return fallbackY
+end
+local function clearPushObjects(root)
+    restoreCollisions()
+    if root then
+        for _, n in ipairs({"UnderPushBV","UpPushBV"}) do
+            local bv = root:FindFirstChild(n); if bv then bv:Destroy() end
+        end
+    end
+end
+
+local function getPredictedPos()
+    if not tRoot then return nil end
+    local pos = tRoot.Position
+    if PREDICTION_ENABLED then
+        local vel = tRoot.AssemblyLinearVelocity
+        local delta = vel * PREDICTION_TIME
+        if delta.Magnitude > PREDICTION_MAX_LEAD then delta = delta.Unit * PREDICTION_MAX_LEAD end
+        local predicted = pos + delta
+        local voidY = workspace.FallenPartsDestroyHeight
+        if predicted.Y < voidY + 30 then predicted = Vector3.new(predicted.X, pos.Y, predicted.Z) end
+        pos = predicted
+    end
+    return pos
+end
+local function getBehindCFrame(targetPos, distance)
+    local base = tRoot.CFrame
+    local lookVec = base.LookVector
+    local behindPos = targetPos - (lookVec * distance)
+    return CFrame.lookAt(behindPos, behindPos + lookVec)
+end
+local function getAboveCFrame(targetPos, distance)
+    local abovePos = targetPos + Vector3.new(0, distance, 0)
+    return CFrame.lookAt(abovePos, targetPos)
+end
+local function getCrossCFrame(targetPos, pointName)
+    local baseLook = tRoot.CFrame.LookVector
+    baseLook = Vector3.new(baseLook.X, 0, baseLook.Z)
+    if baseLook.Magnitude < 0.05 then baseLook = Vector3.new(0,0,-1) else baseLook = baseLook.Unit end
+    local baseRight = Vector3.new(baseLook.Z, 0, -baseLook.X)
+    local localOffset
+    if pointName == "front" then localOffset = baseLook * CROSS_STUDS
+    elseif pointName == "back" then localOffset = baseLook * -CROSS_STUDS
+    elseif pointName == "left" then localOffset = baseRight * -CROSS_STUDS
+    elseif pointName == "right" then localOffset = baseRight * CROSS_STUDS
+    else localOffset = baseLook * CROSS_STUDS end
+    local pos = targetPos + localOffset + Vector3.new(0, CROSS_HEIGHT, 0)
+    local dir = targetPos - pos
+    if dir.Magnitude < 0.01 then return CFrame.new(pos) end
+    return CFrame.lookAt(pos, targetPos)
+end-- ========== STATE ==========
+local userWants = false
+local abilityWanted = false
+local farmOrigin
+local safeActive = false
+local safePausedFarm = false
+local safePausedAbility = false
+local autoAbility = false
+
+local function updateFarmButton()
+    farmBtn.Text = "Auto Farm: " .. (userWants and "ON" or "OFF")
+    setButtonState(farmBtn, userWants)
+end
+local function updateAbilityButton()
+    abilityBtn.Text = "Auto Ability: " .. (abilityWanted and "ON" or "OFF")
+    setButtonState(abilityBtn, abilityWanted)
+end
+local function updateFastModeButton()
+    fastModeBtn.Text = "Fast: " .. (FAST_MODE_ENABLED and "ON" or "OFF")
+    setButtonState(fastModeBtn, FAST_MODE_ENABLED)
+end
+local function updateSwitchButton()
+    switchBtn.Text = "Switch: " .. (SWITCH_ENABLED and "ON" or "OFF")
+    setButtonState(switchBtn, SWITCH_ENABLED)
+    switchStatus.Text = SWITCH_ENABLED and string.format("Switch: every %.1fs", SWITCH_INTERVAL) or "Switch: off"
+    switchStatus.TextColor3 = SWITCH_ENABLED and THEME.SUCCESS or THEME.MUTED
+end
+local function updatePredictionButton()
+    predictionBtn.Text = "Predict: " .. (PREDICTION_ENABLED and "ON" or "OFF")
+    setButtonState(predictionBtn, PREDICTION_ENABLED)
+end
+local function updateHideHitButton()
+    hideHitBtn.Text = "Hide Hit: " .. (HIDE_HIT_ENABLED and "ON" or "OFF")
+    setButtonState(hideHitBtn, HIDE_HIT_ENABLED)
+end
+local function updateHitboxButton()
+    hitboxBtn.Text = "Hitbox: " .. (HITBOX_ENABLED and "ON" or "OFF")
+    setButtonState(hitboxBtn, HITBOX_ENABLED)
+end
+local function killAbilityNow() autoAbility = false end
+
+local function setFarming(state)
+    if state == farming then return end
+    farming = state
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if state then
+        farmOrigin = root and root.CFrame or nil
+        freezeCharacter()
+        if NOCLIP_ENABLED and char then applyFarmNoclip(char) end
+        pcall(function() LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam end)
+    else
+        clearPushObjects(root); unfreezeCharacter()
+        if root and hum and hum.Health > 0 and farmOrigin then pivotCharacterTo(farmOrigin) end
+        farmOrigin = nil; restoreCamera()
+    end
+end
+
+local farmDebounce = false
+farmBtn.Activated:Connect(function()
+    if farmDebounce then return end
+    farmDebounce = true; task.delay(0.3, function() farmDebounce = false end)
+    userWants = not userWants; updateFarmButton()
+    if userWants then
+        if safeActive then status.Text = "Will resume after safe mode"
+        else
+            local char = LocalPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                if manualActive() then setTarget(stickyManualPlayer)
+                elseif autoTarget or not selectedPlayer then
+                    local t = findNextAlive(); if t then setTarget(t) end
+                end
+                setFarming(true)
+                if not selectedPlayer and not stickyManualPlayer then status.Text = "Farming - waiting for a target" end
+            else status.Text = "Will start when you respawn" end
+        end
+    else setFarming(false); status.Text = "Auto farm turned off" end
+end)
+
+abilityBtn.MouseButton1Click:Connect(function()
+    abilityWanted = not abilityWanted; updateAbilityButton()
+    if abilityWanted then
+        if safeActive then killAbilityNow() else autoAbility = true end
+    else killAbilityNow() end
+end)
+
+switchBtn.MouseButton1Click:Connect(function()
+    SWITCH_ENABLED = not SWITCH_ENABLED; lastSwitchTime = 0
+    if SWITCH_ENABLED then stickyManualPlayer = nil; autoTarget = true end
+    updateSwitchButton()
+    status.Text = SWITCH_ENABLED and string.format("Switch ON - retarget every %.1fs", SWITCH_INTERVAL) or "Switch OFF"
+end)
+
+predictionBtn.MouseButton1Click:Connect(function()
+    PREDICTION_ENABLED = not PREDICTION_ENABLED
+    updatePredictionButton()
+    status.Text = PREDICTION_ENABLED and string.format("Prediction ON - %.2fs lead", PREDICTION_TIME) or "Prediction OFF"
+end)
+
+hideHitBtn.MouseButton1Click:Connect(function()
+    HIDE_HIT_ENABLED = not HIDE_HIT_ENABLED
+    updateHideHitButton()
+    if HIDE_HIT_ENABLED then
+        status.Text = "Hide Hit: active (waits for damage)"
+        status.TextColor3 = THEME.SUCCESS
+    else
+        status.Text = "Hide Hit: off"
+        status.TextColor3 = THEME.MUTED
+    end
+end)
+
+hitboxBtn.MouseButton1Click:Connect(function()
+    HITBOX_ENABLED = not HITBOX_ENABLED
+    updateHitboxButton()
+    if HITBOX_ENABLED then
+        refreshAllHitboxes()
+        status.Text = string.format("Hitbox: ON (%d studs, invisible)", HITBOX_SIZE)
+        status.TextColor3 = THEME.SUCCESS
+    else
+        clearAllHitboxes()
+        status.Text = "Hitbox: OFF"
+        status.TextColor3 = THEME.MUTED
+    end
+end)
+
+local zDebounce = false
+UIS.InputBegan:Connect(function(input, gameProcessed)
+    if not gui.Parent then return end
+    if gameProcessed then return end
+    if input.KeyCode ~= Enum.KeyCode.Z then return end
+    if zDebounce then return end
+    zDebounce = true; task.delay(0.25, function() zDebounce = false end)
+    abilityWanted = not abilityWanted; updateAbilityButton()
+    if abilityWanted then
+        if safeActive then killAbilityNow() else autoAbility = true end
+        status.Text = "Auto Ability: ON (Z)"
+    else killAbilityNow(); status.Text = "Auto Ability: OFF (Z)" end
+end)
+
+-- ========== SETTINGS ==========
+local settingsOpen = false
+local settingsPanel = Instance.new("Frame")
+settingsPanel.Name = "SettingsPanel"
+settingsPanel.Size = UDim2.new(1, 0, 1, 0); settingsPanel.Position = UDim2.new(0, 0, 0, 0)
+settingsPanel.BackgroundColor3 = THEME.BG; settingsPanel.BorderSizePixel = 0
+settingsPanel.Visible = false; settingsPanel.ZIndex = 20; settingsPanel.Parent = body
+corner(settingsPanel, 10); stroke(settingsPanel, THEME.BORDER)
+
+local settingsTitle = Instance.new("TextLabel")
+settingsTitle.Size = UDim2.new(1, -16, 0, 24); settingsTitle.Position = UDim2.new(0, 8, 0, 4)
+settingsTitle.BackgroundTransparency = 1; settingsTitle.Text = "Settings"
+settingsTitle.TextColor3 = THEME.TEXT; settingsTitle.Font = Enum.Font.GothamBold
+settingsTitle.TextSize = 14; settingsTitle.TextXAlignment = Enum.TextXAlignment.Left
+settingsTitle.ZIndex = 21; settingsTitle.Parent = settingsPanel
+
+local modeLabel = Instance.new("TextLabel")
+modeLabel.Size = UDim2.new(1, -16, 0, 16); modeLabel.Position = UDim2.new(0, 8, 0, 32)
+modeLabel.BackgroundTransparency = 1; modeLabel.Text = "Farming Mode"
+modeLabel.TextColor3 = THEME.MUTED; modeLabel.Font = Enum.Font.Gotham
+modeLabel.TextSize = 11; modeLabel.TextXAlignment = Enum.TextXAlignment.Left
+modeLabel.ZIndex = 21; modeLabel.Parent = settingsPanel
+
+local underModeBtn = makeButton(settingsPanel, "Under", UDim2.new(0.5, -12, 0, 28), UDim2.new(0, 8, 0, 52))
+underModeBtn.ZIndex = 21; underModeBtn.TextSize = 12
+local upModeBtn = makeButton(settingsPanel, "Up", UDim2.new(0.5, -12, 0, 28), UDim2.new(0.5, 4, 0, 52))
+upModeBtn.ZIndex = 21; upModeBtn.TextSize = 12
+local orbitModeBtn = makeButton(settingsPanel, "Orbit", UDim2.new(0.5, -12, 0, 28), UDim2.new(0, 8, 0, 86))
+orbitModeBtn.ZIndex = 21; orbitModeBtn.TextSize = 12
+local behindModeBtn = makeButton(settingsPanel, "Behind", UDim2.new(0.5, -12, 0, 28), UDim2.new(0.5, 4, 0, 86))
+behindModeBtn.ZIndex = 21; behindModeBtn.TextSize = 12
+local crossModeBtn = makeButton(settingsPanel, "Cross", UDim2.new(0.5, -12, 0, 28), UDim2.new(0, 8, 0, 120))
+crossModeBtn.ZIndex = 21; crossModeBtn.TextSize = 12
+local teleportModeBtn = makeButton(settingsPanel, "Teleport", UDim2.new(0.5, -12, 0, 28), UDim2.new(0.5, 4, 0, 120))
+teleportModeBtn.ZIndex = 21; teleportModeBtn.TextSize = 12
+
+local function makeStudsRow(parent, y, label, initialValue)
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(1, -16, 0, 14); l.Position = UDim2.new(0, 8, 0, y)
+    l.BackgroundTransparency = 1; l.Text = string.format("%s: %.1f", label, initialValue)
+    l.TextColor3 = THEME.MUTED; l.Font = Enum.Font.Gotham; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 21; l.Parent = parent
+    local minus = makeButton(parent, "-", UDim2.new(0, 32, 0, 22), UDim2.new(0, 8, 0, y+16))
+    minus.ZIndex = 21; minus.TextSize = 14
+    local val = Instance.new("TextLabel")
+    val.Size = UDim2.new(1, -100, 0, 22); val.Position = UDim2.new(0, 46, 0, y+16)
+    val.BackgroundColor3 = THEME.SURFACE; val.BorderSizePixel = 0
+    val.Text = string.format("%.1f", initialValue); val.TextColor3 = THEME.TEXT
+    val.Font = Enum.Font.GothamBold; val.TextSize = 11; val.ZIndex = 21; val.Parent = parent
+    corner(val, 6)
+    local plus = makeButton(parent, "+", UDim2.new(0, 32, 0, 22), UDim2.new(1, -40, 0, y+16))
+    plus.ZIndex = 21; plus.TextSize = 14
+    return l, minus, val, plus
+end
+
+local underStudsLabel, underMinusBtn, underStudsValue, underPlusBtn = makeStudsRow(settingsPanel, 150, "Under Studs", UNDER_STUDS)
+local upStudsLabel, upMinusBtn, upStudsValue, upPlusBtn = makeStudsRow(settingsPanel, 192, "Up Studs", UP_STUDS)
+local orbitStudsLabel, orbitMinusBtn, orbitStudsValue, orbitPlusBtn = makeStudsRow(settingsPanel, 234, "Orbit Studs", ORBIT_STUDS)
+local hitboxStudsLabel, hitboxMinusBtn, hitboxStudsValue, hitboxPlusBtn = makeStudsRow(settingsPanel, 276, "Hitbox Size", HITBOX_SIZE)
+
+local function updateModeButtons()
+    underModeBtn.BackgroundColor3    = (MODE == "under")    and THEME.ON_BG or THEME.OFF_BG
+    upModeBtn.BackgroundColor3       = (MODE == "up")       and THEME.ON_BG or THEME.OFF_BG
+    orbitModeBtn.BackgroundColor3    = (MODE == "orbit")    and THEME.ON_BG or THEME.OFF_BG
+    behindModeBtn.BackgroundColor3   = (MODE == "behind")   and THEME.ON_BG or THEME.OFF_BG
+    crossModeBtn.BackgroundColor3    = (MODE == "cross")    and THEME.ON_BG or THEME.OFF_BG
+    teleportModeBtn.BackgroundColor3 = (MODE == "teleport") and THEME.ON_BG or THEME.OFF_BG
+end
+local function updateStudsDisplays()
+    underStudsLabel.Text = string.format("Under Studs: %.1f", UNDER_STUDS); underStudsValue.Text = string.format("%.1f", UNDER_STUDS)
+    upStudsLabel.Text = string.format("Up Studs: %.1f", UP_STUDS); upStudsValue.Text = string.format("%.1f", UP_STUDS)
+    orbitStudsLabel.Text = string.format("Orbit Studs: %.1f", ORBIT_STUDS); orbitStudsValue.Text = string.format("%.1f", ORBIT_STUDS)
+    hitboxStudsLabel.Text = string.format("Hitbox Size: %.1f", HITBOX_SIZE); hitboxStudsValue.Text = string.format("%.1f", HITBOX_SIZE)
+end
+local function clearAllModeVisuals()
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    clearPushObjects(root)
+    lastTeleportTime = 0; lastCrossTime = 0; crossIndex = 1
+    TEST_PHASE = 1
+end
+
+underModeBtn.MouseButton1Click:Connect(function() MODE = "under"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Under" end)
+upModeBtn.MouseButton1Click:Connect(function() MODE = "up"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Up" end)
+orbitModeBtn.MouseButton1Click:Connect(function() MODE = "orbit"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Orbit" end)
+behindModeBtn.MouseButton1Click:Connect(function() MODE = "behind"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Behind (Fast Follow)" end)
+crossModeBtn.MouseButton1Click:Connect(function() MODE = "cross"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Cross" end)
+teleportModeBtn.MouseButton1Click:Connect(function() MODE = "teleport"; clearAllModeVisuals(); updateModeButtons(); status.Text = "Mode: Teleport" end)
+
+underMinusBtn.MouseButton1Click:Connect(function() UNDER_STUDS = math.max(UNDER_MIN_STUDS, UNDER_STUDS - 0.5); updateStudsDisplays() end)
+underPlusBtn.MouseButton1Click:Connect(function() UNDER_STUDS = math.min(UNDER_MAX_STUDS, UNDER_STUDS + 0.5); updateStudsDisplays() end)
+upMinusBtn.MouseButton1Click:Connect(function() UP_STUDS = math.max(UP_MIN_STUDS, UP_STUDS - 0.5); updateStudsDisplays() end)
+upPlusBtn.MouseButton1Click:Connect(function() UP_STUDS = math.min(UP_MAX_STUDS, UP_STUDS + 0.5); updateStudsDisplays() end)
+orbitMinusBtn.MouseButton1Click:Connect(function() ORBIT_STUDS = math.max(ORBIT_MIN_STUDS, ORBIT_STUDS - 0.5); updateStudsDisplays() end)
+orbitPlusBtn.MouseButton1Click:Connect(function() ORBIT_STUDS = math.min(ORBIT_MAX_STUDS, ORBIT_STUDS + 0.5); updateStudsDisplays() end)
+
+hitboxMinusBtn.MouseButton1Click:Connect(function()
+    HITBOX_SIZE = math.max(5, HITBOX_SIZE - 1)
+    updateStudsDisplays()
+    if HITBOX_ENABLED then clearAllHitboxes(); refreshAllHitboxes() end
+end)
+hitboxPlusBtn.MouseButton1Click:Connect(function()
+    HITBOX_SIZE = math.min(50, HITBOX_SIZE + 1)
+    updateStudsDisplays()
+    if HITBOX_ENABLED then clearAllHitboxes(); refreshAllHitboxes() end
+end)
+
+settingsBtn.MouseButton1Click:Connect(function()
+    settingsOpen = not settingsOpen
+    settingsPanel.Visible = settingsOpen
+    if settingsOpen then setListOpen(false); updateModeButtons(); updateStudsDisplays() end
+end)
+
+updateModeButtons(); updateStudsDisplays()
+updateFastModeButton(); updateSwitchButton(); updatePredictionButton(); updateHideHitButton(); updateHitboxButton()
+
+-- ========== SAFE MODE ==========
+local function safeTriggerHp(h) return math.min(SAFE_TRIGGER_HP, h.MaxHealth * 0.2) end
+local function safeResumeHp(h) return math.min(SAFE_RESUME_HP, h.MaxHealth * 0.5) end
+local function destroyPlatform() if safePlatform then safePlatform:Destroy(); safePlatform = nil end end
+local function createPlatform()
+    destroyPlatform()
+    local p = Instance.new("Part")
+    p.Name = "SafePlatform"; p.Anchored = true; p.CanCollide = true
+    p.Size = SAFE_PLATFORM_SIZE; p.Position = safeCenter
+    p.Material = Enum.Material.SmoothPlastic
+    p.Color = Color3.fromRGB(255,255,255)
+    p.Transparency = 0.5
+    p.TopSurface = Enum.SurfaceType.Smooth; p.BottomSurface = Enum.SurfaceType.Smooth
+    p.Parent = workspace; safePlatform = p; return p
+end
+local function standPosition() return safeCenter + Vector3.new(0, SAFE_PLATFORM_SIZE.Y/2 + 3, 0) end
+local function setSafeButton(text, color) safeBtn.Text = text; safeBtn.BackgroundColor3 = color end
+
+local function startSafe()
+    if safeActive then return end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    safePausedFarm = farming; safePausedAbility = autoAbility; safeActive = true
+    setFarming(false); killAbilityNow()
+    setSafeButton("Safe Mode: ACTIVE", Color3.fromRGB(60,60,15))
+    safeStatus.Text = "Safe: teleporting"; safeStatus.TextColor3 = THEME.SUCCESS
+    local baseY = root.Position.Y
+    if selectedPlayer then local tr = getRoot(selectedPlayer); if tr then baseY = tr.Position.Y end end
+    safeCenter = Vector3.new(root.Position.X, baseY + SAFE_HEIGHT, root.Position.Z)
+    local returnCFrame = farmOrigin or root.CFrame
+    farmOrigin = nil; restoreCamera(); createPlatform()
+    pivotCharacterTo(CFrame.new(standPosition()))
+    task.spawn(function()
+        while safeActive and gui.Parent do
+            task.wait(0.05)
+            local c = LocalPlayer.Character
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            if not r or not h or h.Health <= 0 then
+                safeActive = false; destroyPlatform(); safeStatus.Text = "Safe: we died"
+                safeStatus.TextColor3 = THEME.DANGER
+                setSafeButton("Safe Mode: " .. (SAFE_MODE_ENABLED and "ON" or "OFF"),
+                    SAFE_MODE_ENABLED and THEME.ON_BG or THEME.OFF_BG)
+                return
+            end
+            if not safePlatform or not safePlatform.Parent then createPlatform() end
+            pivotCharacterTo(CFrame.new(standPosition()))
+            local need = safeResumeHp(h)
+            safeStatus.Text = string.format("Safe: HP %d / %d", math.floor(h.Health), math.floor(need))
+            if h.Health >= need then break end
+        end
+        local wasActive = safeActive; safeActive = false
+        local c = LocalPlayer.Character
+        local r = c and c:FindFirstChild("HumanoidRootPart")
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if r and h and h.Health > 0 then pivotCharacterTo(returnCFrame) end
+        destroyPlatform()
+        setSafeButton("Safe Mode: " .. (SAFE_MODE_ENABLED and "ON" or "OFF"),
+            SAFE_MODE_ENABLED and THEME.ON_BG or THEME.OFF_BG)
+        local alive = h and h.Health > 0
+        if alive and safePausedFarm and userWants then setFarming(true); status.Text = "Safe mode done - farming resumed"
+        elseif alive and not userWants then status.Text = "Safe mode done - farm stays off"
+        elseif wasActive then safeStatus.Text = "Safe: healed, back"; safeStatus.TextColor3 = THEME.SUCCESS
+        else safeStatus.Text = "Safe: idle"; safeStatus.TextColor3 = THEME.MUTED end
+        if alive and safePausedAbility and abilityWanted then autoAbility = true else killAbilityNow() end
+        safePausedFarm = false; safePausedAbility = false
+    end)
+end
+
+safeBtn.MouseButton1Click:Connect(function()
+    SAFE_MODE_ENABLED = not SAFE_MODE_ENABLED
+    if not SAFE_MODE_ENABLED then safeActive = false; safeStatus.Text = "Safe: idle"; safeStatus.TextColor3 = THEME.MUTED end
+    if not safeActive then
+        setSafeButton("Safe Mode: " .. (SAFE_MODE_ENABLED and "ON" or "OFF"),
+            SAFE_MODE_ENABLED and THEME.ON_BG or THEME.OFF_BG)
+    end
+end)
+
+-- ========== ANTI DEATHCOUNTER ==========
+local function runTpVoid()
+    if tpVoidRunning or safeActive or isHidingHit then return end
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then
+        status.Text = "Anti DC: you are not alive"
+        status.TextColor3 = THEME.DANGER
+        return
+    end
+    tpVoidRunning = true
+    local origin = root.CFrame
+    local feetOffset = 3
+    do
+        local minY = getBodyExtents(char)
+        if minY then feetOffset = math.max(1, root.Position.Y - minY) end
+    end
+    local voidPlatform = nil
+    local ok, err = pcall(function()
+        freezeCharacter()
+        local voidY = workspace.FallenPartsDestroyHeight
+        local belowY = voidY + TPVOID_VOID_MARGIN
+        if origin.Position.Y < belowY then belowY = origin.Position.Y end
+        local belowCF = CFrame.new(origin.Position.X, belowY, origin.Position.Z)
+        voidPlatform = Instance.new("Part")
+        voidPlatform.Name = "AntiDCPlatform"
+        voidPlatform.Anchored = true
+        voidPlatform.CanCollide = true
+        voidPlatform.Size = Vector3.new(30, 1, 30)
+        voidPlatform.Position = Vector3.new(origin.Position.X, belowY - feetOffset - 0.4, origin.Position.Z)
+        voidPlatform.Color = Color3.fromRGB(255, 255, 255)
+        voidPlatform.Transparency = 0.5
+        voidPlatform.Material = Enum.Material.SmoothPlastic
+        voidPlatform.Parent = workspace
+        local t0 = os.clock()
+        while (os.clock() - t0) < TPVOID_BELOW_HOLD and hum.Health > 0 and char.Parent and gui.Parent do
+            pivotCharacterTo(belowCF)
+            status.Text = string.format("Anti DC: in void (%.1fs)", math.max(0, TPVOID_BELOW_HOLD - (os.clock() - t0)))
+            status.TextColor3 = THEME.SUCCESS
+            RunService.Heartbeat:Wait()
+        end
+        if voidPlatform then voidPlatform:Destroy(); voidPlatform = nil end
+        if hum.Health > 0 and char.Parent then
+            status.Text = "Anti DC: returning..."
+            local t1 = os.clock()
+            while (os.clock() - t1) < 0.5 and hum.Health > 0 and char.Parent do
+                pivotCharacterTo(origin)
+                RunService.Heartbeat:Wait()
+            end
+ -- ========== FARM LOOP ==========
+local myChar, myHum, myRoot
+local tPlr, tChar
+local function refreshMine()
+    local char = LocalPlayer.Character
+    if char ~= myChar or not myRoot or not myHum or not myRoot.Parent or not myHum.Parent then
+        myChar = char
+        myHum = char and char:FindFirstChildOfClass("Humanoid")
+        myRoot = char and char:FindFirstChild("HumanoidRootPart")
+    end
+end
+refreshTarget = function()
+    local char = selectedPlayer and selectedPlayer.Character
+    if selectedPlayer ~= tPlr or char ~= tChar
+    or not tHum or not tRoot or not tRoot.Parent or not tHum.Parent then
+        tPlr, tChar = selectedPlayer, char
+        tHum = char and char:FindFirstChildOfClass("Humanoid")
+        tRoot = char and char:FindFirstChild("HumanoidRootPart")
+    end
+    return tHum ~= nil and tRoot ~= nil and tHum.Health > 0
+end
+
+local lastRetarget = 0
+local targetDeadSince = 0
+
+RunService.Heartbeat:Connect(function(dt)
+    if not gui.Parent then return end
+    if isHidingHit or tpVoidRunning then return end
+    if not farming or safeActive then return end
+    refreshMine()
+    if not (myRoot and myHum) then return end
+    if myHum.Health <= 0 then return end
+    if NOCLIP_ENABLED and myChar then applyFarmNoclip(myChar) end
+
+    if stickyManualPlayer then
+        if manualActive() then
+            if autoTarget then autoTarget = false end
+            if selectedPlayer ~= stickyManualPlayer then
+                setTarget(stickyManualPlayer)
+                status.Text = "Re-locked: " .. stickyManualPlayer.Name
+                status.TextColor3 = THEME.SUCCESS
+                refreshTarget()
+            end
+            targetDeadSince = 0
+        else
+            if not autoTarget then
+                autoTarget = true; selectedPlayer = nil
+                selectBtn.Text = "Auto: lowest HP v"; targetDeadSince = 0
+                status.Text = "Manual dead - auto (waiting " .. stickyManualPlayer.Name .. ")"
+                status.TextColor3 = Color3.fromRGB(220,180,90)
+                local nextPlr = findNextAlive()
+                if nextPlr then selectedPlayer = nextPlr; refreshTarget() end
+            end
+        end
+    end
+
+    if SWITCH_ENABLED and (os.clock() - lastSwitchTime) >= SWITCH_INTERVAL then
+        lastSwitchTime = os.clock()
+        local nextPlr = findRandomAliveSkipCurrent()
+        if nextPlr then
+            autoTarget = true; stickyManualPlayer = nil; selectedPlayer = nextPlr
+            selectBtn.Text = "Auto: lowest HP v"; refreshTarget()
+            status.Text = "Switch -> " .. nextPlr.Name
+        end
+    end
+
+    if autoTarget and not manualActive() and not SWITCH_ENABLED then
+        local curChar = selectedPlayer and selectedPlayer.Character
+        local curHum = curChar and curChar:FindFirstChildOfClass("Humanoid")
+        local curRoot = curChar and curChar:FindFirstChild("HumanoidRootPart")
+        local curDead = (curChar == nil) or (curHum == nil) or (curRoot == nil)
+            or (curHum.Health <= 0) or (curHum:GetState() == Enum.HumanoidStateType.Dead)
+        if not selectedPlayer or curDead then
+            if targetDeadSince == 0 then targetDeadSince = os.clock() end
+            if (os.clock() - targetDeadSince) >= AUTO_DEATH_CONFIRM then
+                local best = findNextAlive(selectedPlayer)
+                if best then
+                    selectedPlayer = best; refreshTarget(); targetDeadSince = 0
+                    status.Text = "Switched to: " .. best.Name; status.TextColor3 = Color3.fromRGB(170,170,170)
+                else
+                    status.Text = "No alive targets - waiting"; status.TextColor3 = THEME.MUTED
+                end
+            end
+        else targetDeadSince = 0 end
+    end
+
+    local targetValid = refreshTarget()
+    if not targetValid then return end
+    if isTargetVoiding(selectedPlayer, tRoot, tHum) then
+        status.Text = "Target in void - waiting"
+        status.TextColor3 = Color3.fromRGB(220,180,90); return
+    end
+    local cam = workspace.CurrentCamera
+    if cam and cam.CameraSubject ~= tHum then cam.CameraSubject = tHum end
+
+    local predTag = PREDICTION_ENABLED and " ⚡" or ""
+    if stickyManualPlayer and not manualActive() then
+        status.Text = ("AUTO (waiting %s)%s: %s [%d HP]"):format(
+            stickyManualPlayer.Name, predTag, selectedPlayer.Name, math.floor(tHum.Health))
+        status.TextColor3 = Color3.fromRGB(220,180,90)
+    else
+        status.Text = ("Target: %s [%d HP]%s"):format(selectedPlayer.Name, math.floor(tHum.Health), predTag)
+        status.TextColor3 = Color3.fromRGB(180,180,180)
+    end
+
+    if MODE == "under" then
+        local targetPos = getPredictedPos() or tRoot.Position
+        local desired = Vector3.new(targetPos.X, targetPos.Y - UNDER_STUDS, targetPos.Z)
+        local flat = tRoot.CFrame.LookVector * Vector3.new(1,0,1)
+        if flat.Magnitude < 0.05 then flat = Vector3.new(0,0,1) else flat = flat.Unit end
+        local cf
+        if (targetPos - desired).Magnitude < 0.01 then cf = CFrame.new(desired)
+        else cf = CFrame.lookAt(desired, targetPos, flat) end
+        pivotFarm(cf)
+    elseif MODE == "up" then
+        local targetPos = getPredictedPos() or tRoot.Position
+        local desired = Vector3.new(targetPos.X, targetPos.Y + UP_STUDS, targetPos.Z)
+        pivotFarm(CFrame.lookAt(desired, targetPos))
+    elseif MODE == "cross" then
+        local now = os.clock()
+        if CROSS_INTERVAL <= 0 or (now - lastCrossTime) >= CROSS_INTERVAL then
+            lastCrossTime = now
+            local targetPos = getPredictedPos() or tRoot.Position
+            local pointName = CROSS_PATTERN[crossIndex]
+            pivotFarm(getCrossCFrame(targetPos, pointName))
+            crossIndex = crossIndex + 1
+            if crossIndex > #CROSS_PATTERN then crossIndex = 1 end
+        end
+    elseif MODE == "orbit" then
+        local targetPos = getPredictedPos() or tRoot.Position
+        orbitAngle = (orbitAngle + math.rad(ORBIT_SPEED) * dt) % (math.pi * 2)
+        local px = targetPos.X + math.cos(orbitAngle) * ORBIT_STUDS
+        local pz = targetPos.Z + math.sin(orbitAngle) * ORBIT_STUDS
+        local feetFallback = targetPos.Y - (tRoot.Size.Y/2 + tHum.HipHeight)
+        local targetFloorY = findFloorY(targetPos.X, targetPos.Z, targetPos.Y + 5, feetFallback)
+        local targetFeetY = targetPos.Y - (tRoot.Size.Y/2 + tHum.HipHeight)
+        local heightAboveFloor = targetFeetY - targetFloorY
+        local y
+        if heightAboveFloor >= ORBIT_FOLLOW_MIN and heightAboveFloor <= ORBIT_FOLLOW_MAX then y = targetPos.Y
+        else
+            local floorY = findFloorY(px, pz, targetPos.Y + 5, feetFallback)
+            local minY, maxY = getBodyExtents(myChar)
+            if minY then
+                local height = maxY - minY
+                local rootToCenter = myRoot.Position.Y - (minY + maxY)/2
+                local centerY = floorY + (0.5 - ORBIT_FLOOR_SINK) * height
+                y = centerY + rootToCenter
+            else y = floorY + 0.5 end
+        end
+        y = math.max(y, workspace.FallenPartsDestroyHeight + VOID_MARGIN + 2)
+        pivotFarm(CFrame.lookAt(Vector3.new(px, y, pz), Vector3.new(targetPos.X, y, targetPos.Z)))
+    elseif MODE == "behind" then
+        local targetPos = getPredictedPos() or tRoot.Position
+        pivotFarm(getBehindCFrame(targetPos, BEHIND_DISTANCE))
+    else
+        local now = os.clock()
+        if (now - lastTeleportTime) >= TELEPORT_INTERVAL then
+            lastTeleportTime = now
+            local targetPos = getPredictedPos() or tRoot.Position
+            if TEST_PHASE == 1 then
+                pivotFarm(getBehindCFrame(targetPos, TELEPORT_DISTANCE))
+                TEST_PHASE = 2
+            else
+                local belowPos = Vector3.new(targetPos.X, targetPos.Y - 470, targetPos.Z)
+                pivotFarm(CFrame.lookAt(belowPos, targetPos))
+                TEST_PHASE = 1
+            end
+        end
+    end
+end)
+
+-- ========== HIDE HIT ==========
+local HIDE_DURATION = 1.5
+local RETURN_DURATION = 0.6
+local RETURN_MAX_TIME = 3
+local RETURN_TOLERANCE = 6
+
+local posHistory = {}
+RunService.Heartbeat:Connect(function()
+    if not gui.Parent then return end
+    if isHidingHit or safeActive or tpVoidRunning then return end
+    local c = LocalPlayer.Character
+    local r = c and c:FindFirstChild("HumanoidRootPart")
+    if not r then return end
+    local now = os.clock()
+    posHistory[#posHistory + 1] = { t = now, cf = r.CFrame }
+    while #posHistory > 0 and (now - posHistory[1].t) > 0.5 do
+        table.remove(posHistory, 1)
+    end
+end)
+local function getPreHitCFrame(fallback)
+    local now = os.clock()
+    for _, e in ipairs(posHistory) do
+        if (now - e.t) <= 0.3 then return e.cf end
+    end
+    return fallback
+end
+
+local function runHideHit(char, hum, savedCFrame, hideCFrame, hidePlatform)
+    local function finish()
+        if hidePlatform then pcall(function() hidePlatform:Destroy() end) end
+        isHidingHit = false
+    end
+    task.delay(HIDE_DURATION + RETURN_DURATION + 5, function()
+        if isHidingHit then finish() end
+    end)
+    local ok, err = pcall(function()
+        local t0 = os.clock()
+        while (os.clock() - t0) < HIDE_DURATION and hum.Health > 0 and char.Parent and HIDE_HIT_ENABLED do
+            pivotCharacterTo(hideCFrame)
+            RunService.Heartbeat:Wait()
+        end
+        if hum.Health <= 0 or not char.Parent then return end
+        status.Text = "Hide Hit: returning..."
+        status.TextColor3 = THEME.SUCCESS
+        pcall(function() LocalPlayer:RequestStreamAroundAsync(savedCFrame.Position, 2) end)
+        local t1 = os.clock()
+        local arrivedSince = nil
+        while hum.Health > 0 and char.Parent do
+            pivotCharacterTo(savedCFrame)
+            RunService.Heartbeat:Wait()
+            local r = char:FindFirstChild("HumanoidRootPart")
+            local dist = r and (r.Position - savedCFrame.Position).Magnitude or math.huge
+            local elapsed = os.clock() - t1
+            if dist <= RETURN_TOLERANCE then
+                arrivedSince = arrivedSince or os.clock()
+                if (os.clock() - arrivedSince) >= RETURN_DURATION then break end
+            else
+                arrivedSince = nil
+            end
+            if elapsed >= RETURN_MAX_TIME then
+                status.Text = string.format("Hide Hit: return failed (%.0f studs off)", dist == math.huge and -1 or dist)
+                status.TextColor3 = THEME.DANGER
+                break
+            end
+        end
+        if hum.Health > 0 and char.Parent and not farming then
+            unfreezeCharacter()
+            local r = char:FindFirstChild("HumanoidRootPart")
+            if r then
+                r.AssemblyLinearVelocity = Vector3.zero
+                r.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        if not string.find(status.Text, "failed", 1, true) then
+            status.Text = "Hide Hit: returned"
+        end
+    end)
+    if not ok then
+        status.Text = "Hide Hit error: " .. tostring(err)
+        status.TextColor3 = THEME.DANGER
+    end
+    finish()
+end
+
+local hookHealth
+hookHealth = function(char)
+    local hum = char:WaitForChild("Humanoid", 10)
+    if not hum then return end
+    local lastHp = hum.Health
+    hum.HealthChanged:Connect(function(hp)
+        if not gui.Parent then return end
+        if hp < lastHp and hp > 0 and HIDE_HIT_ENABLED == true and not isHidingHit and not safeActive and not tpVoidRunning then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            if root then
+                isHidingHit = true
+                local savedCFrame = getPreHitCFrame(root.CFrame)
+                local hideX, hideZ = root.Position.X, root.Position.Z
+                local hideCFrame = CFrame.new(hideX, 5000, hideZ)
+                local hidePlatform = Instance.new("Part")
+                hidePlatform.Name = "HideHitPlatform"
+                hidePlatform.Anchored = true
+                hidePlatform.CanCollide = true
+                hidePlatform.Size = Vector3.new(20, 1, 20)
+                hidePlatform.Position = Vector3.new(hideX, 4995, hideZ)
+                hidePlatform.Color = Color3.fromRGB(255, 255, 255)
+                hidePlatform.Transparency = 0.5
+                hidePlatform.Material = Enum.Material.SmoothPlastic
+                hidePlatform.Parent = workspace
+                task.spawn(runHideHit, char, hum, savedCFrame, hideCFrame, hidePlatform)
+            end
+        end
+        if not SAFE_MODE_ENABLED or safeActive then lastHp = hp; return end
+        if not (farming or userWants) then lastHp = hp; return end
+        if hp > 0 and hp <= safeTriggerHp(hum) then startSafe() end
+        lastHp = hp
+    end)
+    hum.Died:Connect(function()
+        if not gui.Parent then return end
+        if farming then
+            setFarming(false)
+            status.Text = userWants and "You died - resumes on respawn" or "You died - stopped"
+        end
+        safeActive = false
+        isHidingHit = false
+        unfreezeCharacter(); restoreCollisions()
+        if char then clearHitboxFromCharacter(char) end
+        myChar, myHum, myRoot = nil, nil, nil
+        tPlr, tChar, tHum, tRoot = nil, nil, nil, nil
+        farmOrigin = nil; crossIndex = 1
+        TEST_PHASE = 1
+    end)
+end
+if LocalPlayer.Character then task.spawn(hookHealth, LocalPlayer.Character) end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    if not gui.Parent then return end
+    farming = false; farmOrigin = nil
+    myChar, myHum, myRoot = nil, nil, nil
+    tPlr, tChar, tHum, tRoot = nil, nil, nil, nil
+    safeActive = false; crossIndex = 1
+    TEST_PHASE = 1
+    isHidingHit = false
+    restoreCollisions(); unfreezeCharacter()
+    task.spawn(hookHealth, char)
+    task.delay(0.3, function() if HITBOX_ENABLED then refreshAllHitboxes() end end)
+    if userWants then
+        task.delay(0.6, function()
+            local c = LocalPlayer.Character
+            local h = c and c:FindFirstChildOfClass("Humanoid")
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            if c == char and h and r and h.Health > 0 and not safeActive then
+                if manualActive() then
+                    setTarget(stickyManualPlayer)
+                    status.Text = "Respawned - re-locked: " .. stickyManualPlayer.Name
+                    status.TextColor3 = THEME.SUCCESS
+                else
+                    if autoTarget or not selectedPlayer then
+                        local t = findNextAlive(); if t then setTarget(t) end
+                    end
+                    if stickyManualPlayer then
+                        status.Text = "Respawned - auto (waiting " .. stickyManualPlayer.Name .. ")"
+                        status.TextColor3 = Color3.fromRGB(220,180,90)
+                    else
+                        status.Text = "Respawned - farming"
+                        status.TextColor3 = Color3.fromRGB(170,170,170)
+                    end
+                end
+                setFarming(true)
+            end
+        end)
+    end
+end)
+
+-- ========== AUTO ABILITY ==========
+local ABILITY_KEYS = {Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four}
+local DASH_KEY = Enum.KeyCode.Q
+
+local function abilityActive()
+    if not abilityWanted then return false end
+    if not autoAbility then return false end
+    if safeActive then return false end
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    return true
+end
+local function pressKey(key, tapName)
+    if not abilityActive() then return end
+    pcall(function()
+        VIM:SendKeyEvent(true, key, false, game)
+        task.wait(IS_MOBILE and 0.08 or 0.03)
+        VIM:SendKeyEvent(false, key, false, game)
+    end)
+    if IS_MOBILE and tapName and TAP_TARGETS[tapName] then mobileTap(TAP_TARGETS[tapName]) end
+end
+local function clickM1()
+    if not abilityActive() then return end
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        local size = cam and cam.ViewportSize or Vector2.new(800,600)
+        local x, y = size.X * CLICK_X, size.Y * CLICK_Y
+        VIM:SendMouseButtonEvent(x, y, 0, true, game, 0)
+        task.wait(IS_MOBILE and 0.03 or 0.02)
+        VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end)
+    if IS_MOBILE and TAP_TARGETS.m1 then mobileTap(TAP_TARGETS.m1) end
+end
+task.spawn(function()
+    local lastAbilityTime = 0; local comboRunId = 0
+    while gui.Parent do
+        if not abilityActive() then task.wait(0.1); continue end
+        clickM1(); task.wait(M1_SPAM_DELAY)
+        pressKey(DASH_KEY, "q"); task.wait(Q_SPAM_DELAY)
+        local now = os.clock()
+        if (now - lastAbilityTime) >= ABILITY_SEQUENCE_GAP then
+            lastAbilityTime = now; comboRunId = comboRunId + 1
+            local myRun = comboRunId
+            task.spawn(function()
+                local keyNames = {"one","two","three","four"}
+                for i = 1, 4 do
+                    local waited = 0
+                    while waited < ABILITY_KEY_DELAY do
+                        if not abilityActive() then return end
+                        if myRun ~= comboRunId then return end
+                        task.wait(0.1); waited = waited + 0.1
+                    end
+                    if not abilityActive() then return end
+                    if myRun ~= comboRunId then return end
+                    pressKey(ABILITY_KEYS[i], keyNames[i])
+                    task.wait(0.05)
+                end
+            end)
+        end
+    end
+end)
